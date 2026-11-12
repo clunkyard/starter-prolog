@@ -60,8 +60,7 @@ on_turn(R,Free,Free) :-
         (Zone.shape==sphere->angles_elevation_to(Pos,Zone.center,Climb);Climb=0),
         angles_bearing_to(Pos,Zone.center,Home),angles_angle_diff(Home,Heading,HomeOff),clamp(HomeOff/30,HomeTurn),clamp((Climb-Pitch)/30,HomePitch),
         drive_set(R,[throttle=0.8,turn=HomeTurn,pitch_turn=HomePitch]);true),
-    raw_number(R,"state.calibration.work",Work),
-    (number(Work),Work>0->clock_tick(R,Tick),Rounds is floor(Work),calibration_work(Rounds,Tick,Out),status_set(R,[text="WORK",value=Out]);true).
+    true.
 track(R,Target,Heading,Pitch) :-
     (Target.range>350->Throttle=0.7;Target.range<200->Throttle= -0.4;Throttle=0.2),
     steer(Target.bearing,Heading,Turn),steer(Target.elevation,Pitch,PitchTurn),
@@ -82,18 +81,3 @@ search(R,Free,Pitch) :-
     clock_tick(R,Tick),(Free==true->Up is ((Tick//10) mod 3-1)*35;Up=0),
     steer(0,Pitch,PitchTurn),drive_set(R,[throttle=0.5,turn=0.33,pitch_turn=PitchTurn]),
     scanner_last(R,Scan),angles_normalize(Scan.heading+36,Heading),scanner_set(R,[heading=Heading,arc=40,pitch=Up]),status_set(R,[text="SEARCH"]).
-
-% The calibration kernel, xorshift-sqrt v1: Work rounds of a 64-bit xorshift
-% and a square-root sum.
-calibration_work(Work, Tick, Out) :-
-    X is 88172645463325252 xor Tick,
-    calibration_work(Work, X, 0.0, Out).
-
-calibration_work(0, X, Sum, Out) :- !, Out is (floor(Sum) + (X >> 40)) mod 1000000.
-calibration_work(N, X0, Sum0, Out) :-
-    X1 is X0 xor ((X0 << 13) /\ 0xFFFFFFFFFFFFFFFF),
-    X2 is X1 xor (X1 >> 7),
-    X3 is X2 xor ((X2 << 17) /\ 0xFFFFFFFFFFFFFFFF),
-    Sum is Sum0 + sqrt(X3 >> 11),
-    N1 is N - 1,
-    calibration_work(N1, X3, Sum, Out).
