@@ -7,7 +7,8 @@
 % clock: tick seconds remaining_ticks
 % arena: size gravity terrain_kind ground_height(x y)
 % me: health position velocity heading pitch roll angular_velocity
-%   attitude grounded altitude applied
+%   attitude grounded altitude applied hull_mounts to_mount(heading pitch)
+%   from_mount(heading pitch) mount_toward(point)
 % battery: charge capacity regen sustainable_drive compute
 %   drive_cost(fraction)
 % drive: hover_lift
@@ -29,7 +30,8 @@
 % score: me best armour
 % angles: normalize(degrees) angle_diff(target current)
 %   bearing_to(from to) elevation_to(from to) direction(heading pitch)
-%   distance(a b) clamp(value low high)
+%   distance(a b) to_chassis(heading pitch attitude)
+%   from_chassis(heading pitch attitude) clamp(value low high)
 % raw: number(path) text(path) has(path) flag(path) count(path) line()
 % Controls: drive.set(throttle turn pitch_turn)
 %   drive.forces(thrust strafe lift yaw_torque pitch_torque roll_torque brake)
@@ -43,13 +45,15 @@
 % Manual: https://clunkyard.com/manual#sdk
 :- use_module(library(clunkyard)).
 main :- run(user).
-on_start(R,Free) :- match_is_3d(R,Is3d),arena_gravity(R,Gravity),(Is3d==true,Gravity.z=:=0->Free=true;Free=false).
+% The state each turn passes on: whether it flies free, and its dodge(Taken,EndTick).
+on_start(R,starter(Free,dodge(0,0))) :- match_is_3d(R,Is3d),arena_gravity(R,Gravity),(Is3d==true,Gravity.z=:=0->Free=true;Free=false).
 clamp(Value,Clamped) :- angles_clamp(Value,-1,1,Clamped).
 steer(Towards,Current,Turn) :- angles_angle_diff(Towards,Current,Off),clamp(Off/45,Turn).
-on_turn(R,Free,Free) :-
+on_turn(R,starter(Free,Dodge0),starter(Free,Dodge)) :-
     me_position(R,Pos),me_heading(R,Heading),me_pitch(R,Pitch),drive_forces(R,[brake=0.2]),
     sensors_nearest(R,Target),tracker_cue(R,Cue),
     (Target\==null->track(R,Target,Heading,Pitch);Cue\==null->follow(R,Cue,Free,Pos,Heading,Pitch);search(R,Free,Pitch)),
+    dodge(R,Dodge0,Dodge),
     battery_charge(R,Charge),battery_capacity(R,Capacity),
     (Charge<Capacity/4->drive_get(R,throttle,Throttle),drive_set(R,[throttle=Throttle*0.5]);true),
     nav_storm(R,Storm),
@@ -65,6 +69,7 @@ track(R,Target,Heading,Pitch) :-
     (Target.range>350->Throttle=0.7;Target.range<200->Throttle= -0.4;Throttle=0.2),
     steer(Target.bearing,Heading,Turn),steer(Target.elevation,Pitch,PitchTurn),
     drive_set(R,[throttle=Throttle,turn=Turn,pitch_turn=PitchTurn]),scanner_set(R,[heading=Target.bearing,arc=20,pitch=Target.elevation]),
+    % gun_lead is the intercept if the target holds course.
     gun_power_for_flight_time(R,Target.range,1,Power),gun_lead(R,Target,Power,Aim),
     (Aim==null->H=Target.bearing,P=Target.elevation;H=Aim.heading,P=Aim.pitch),
     gun_aim(R,[heading=H,pitch=P]),gun_aim_now(R,Now),angles_angle_diff(H,Now.heading,Off),
@@ -81,3 +86,13 @@ search(R,Free,Pitch) :-
     clock_tick(R,Tick),(Free==true->Up is ((Tick//10) mod 3-1)*35;Up=0),
     steer(0,Pitch,PitchTurn),drive_set(R,[throttle=0.5,turn=0.33,pitch_turn=PitchTurn]),
     scanner_last(R,Scan),angles_normalize(Scan.heading+36,Heading),scanner_set(R,[heading=Heading,arc=40,pitch=Up]),status_set(R,[text="SEARCH"]).
+% A simple dodge: vary it, or predict the shooter.
+dodge(R,dodge(N,End),Dodge) :-
+    clock_tick(R,Tick),Tick>=End,sensors_cues(R,Cues),member(Cue,Cues),Cue.source==muzzle,!,
+    N1 is N+1,End1 is Tick+10,Dodge=dodge(N1,End1),dodging(R,N1).
+dodge(R,Dodge,Dodge) :- clock_tick(R,Tick),Dodge=dodge(N,End),(Tick<End->dodging(R,N);true).
+% Off the line of fire: left, then right next time (turn is positive left, strafe positive right).
+dodging(R,N) :-
+    (N mod 2=:=1->Side=left,Turn=1;Side=right,Turn= -1),match_control(R,Control),
+    (Control==forces->Strafe is -Turn,drive_set(R,[throttle=0.5]),drive_forces(R,[strafe=Strafe]);drive_set(R,[throttle=1,turn=Turn])),
+    format(string(Text),"dodge:~w",[Side]),status_set(R,[text=Text,value=N]).
